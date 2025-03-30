@@ -69,7 +69,7 @@ async def create_new_order(
         first_name=tg_first_name or "Telegram User", # WC требует имя
         last_name=tg_last_name or str(tg_user_id),
         # Генерируем временный email, если WC требует (проверьте настройки WC)
-        # email=f"tg_{tg_user_id}@telegram.user"
+        email=f"tg_{tg_user_id}@telegram.user"
     )
 
     # 3. Формирование данных для создания заказа в WC
