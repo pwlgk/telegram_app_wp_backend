@@ -142,7 +142,7 @@ class TelegramService:
         status_map = {
             'on-hold': 'В ожидании подтверждения',
             'processing': 'В обработке',
-            'completed': 'Выполнен (Доставлен)',
+            'completed': 'Выполнен (Отправлен)',
             'cancelled': 'Отменен',
             'refunded': 'Возвращен',
             'failed': 'Не удался',
