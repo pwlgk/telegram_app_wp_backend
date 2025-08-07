@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from typing import List, Dict, Annotated, Optional
 
 from app.services.woocommerce import WooCommerceService
-from app.dependencies import get_woocommerce_service, validate_telegram_data
+from app.dependencies import get_current_customer_id, get_woocommerce_service, validate_telegram_data
 from app.models.order import LineItemCreate # Переиспользуем модель товара в корзине
 
 logger = logging.getLogger(__name__)
@@ -20,12 +20,14 @@ CART_META_KEY = "telegram_cart"
     description="Возвращает сохраненную корзину, синхронизированную с актуальными остатками и ценами.",
 )
 async def get_user_cart(
-    background_tasks: BackgroundTasks, # <<< Добавляем для фонового сохранения
-    telegram_data: Annotated[Dict, Depends(validate_telegram_data)],
+    background_tasks: BackgroundTasks,
+    customer_id: Annotated[int, Depends(get_current_customer_id)], # <<< ЗАМЕНЯЕМ
     wc_service: WooCommerceService = Depends(get_woocommerce_service),
 ):
-    user_info = telegram_data.get('user', {})
-    customer_id = await wc_service.find_or_create_customer_by_telegram_data(user_info)
+    # user_info = telegram_data.get('user', {})
+    # customer_id = await wc_service.find_or_create_customer_by_telegram_data(user_info)
+    customer_data = await wc_service.get_customer_by_id(customer_id) # <<< Используем customer_id напрямую
+
     if not customer_id:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Не удалось обработать профиль пользователя.")
 
@@ -113,12 +115,14 @@ async def get_user_cart(
     description="Полностью перезаписывает корзину пользователя новыми данными. Для очистки корзины передайте пустой массив [].",
 )
 async def update_user_cart(
-    cart_items: List[LineItemCreate], # Принимаем полный список товаров в корзине
-    telegram_data: Annotated[Dict, Depends(validate_telegram_data)],
+    cart_items: List[LineItemCreate],
+    customer_id: Annotated[int, Depends(get_current_customer_id)], # <<< ЗАМЕНЯЕМ
     wc_service: WooCommerceService = Depends(get_woocommerce_service),
 ):
-    user_info = telegram_data.get('user', {})
-    customer_id = await wc_service.find_or_create_customer_by_telegram_data(user_info)
+    # user_info = telegram_data.get('user', {})
+    # customer_id = await wc_service.find_or_create_customer_by_telegram_data(user_info)
+    updated_customer = await wc_service.update_customer(customer_id, update_data) # <<< Используем customer_id
+
     if not customer_id:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Не удалось найти профиль для сохранения корзины.")
 

@@ -8,7 +8,7 @@ from app.services.woocommerce import WooCommerceService, WooCommerceServiceError
 from app.services.telegram import TelegramService, TelegramNotificationError
 from app.models.order import OrderCreateWooCommerce, LineItemCreate, MetaData, OrderWooCommerce, CouponLine
 from app.models.common import MetaData as CommonMetaData # Используем общую модель
-from app.dependencies import get_woocommerce_service, get_telegram_service, validate_telegram_data
+from app.dependencies import get_current_customer_id, get_woocommerce_service, get_telegram_service, validate_telegram_data
 from app.core.config import settings
 from pydantic import BaseModel, Field # Импорт BaseModel и Field
 
@@ -34,7 +34,8 @@ class OrderPayload(BaseModel):
 async def create_new_order(
     payload: OrderPayload,
     background_tasks: BackgroundTasks,
-    telegram_data: Annotated[Dict, Depends(validate_telegram_data)],
+    telegram_data: Annotated[Dict, Depends(validate_telegram_data)], # Оставляем для user_info
+    customer_id: Annotated[int, Depends(get_current_customer_id)], # <<< ДОБАВЛЯЕМ
     wc_service: WooCommerceService = Depends(get_woocommerce_service),
     tg_service: TelegramService = Depends(get_telegram_service),
 ):
@@ -43,7 +44,7 @@ async def create_new_order(
     logger.info(f"Processing order creation request for Telegram user ID: {tg_user_id}")
 
     # 1. Найти или создать пользователя и получить его customer_id
-    customer_id = await wc_service.find_or_create_customer_by_telegram_data(user_info)
+    # customer_id = await wc_service.find_or_create_customer_by_telegram_data(user_info)
 
     if not customer_id:
         logger.critical(f"Failed to resolve a customer ID for Telegram user {tg_user_id}. Aborting order creation.")

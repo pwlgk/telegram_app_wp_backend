@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from typing import Dict, Annotated, Optional
 
 from app.services.woocommerce import WooCommerceService
-from app.dependencies import get_woocommerce_service, validate_telegram_data
+from app.dependencies import get_current_customer_id, get_woocommerce_service, validate_telegram_data
 from pydantic import BaseModel, Field
 from app.models.common import BillingInfo # <<< ИМПОРТИРУЕМ ОБЩУЮ МОДЕЛЬ
 
@@ -82,3 +82,14 @@ async def update_current_customer_info(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Не удалось обновить профиль.")
     
     return updated_customer
+
+
+# в customers.py или новом файле user.py
+@router.post("/register", status_code=200)
+async def register_user_from_app(
+    customer_id: Annotated[int, Depends(get_current_customer_id)]
+):
+    # Сама зависимость get_current_customer_id уже сделает всю работу.
+    # Нам нужно только вернуть подтверждение.
+    logger.info(f"User with customer_id {customer_id} confirmed registration via Mini App.")
+    return {"status": "ok", "customer_id": customer_id}

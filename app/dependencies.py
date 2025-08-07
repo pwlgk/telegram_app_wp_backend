@@ -107,3 +107,41 @@ async def validate_telegram_data(
 #     user_id = user_info.get('id')
 #     # ... ваша логика
 #     return {"message": f"Hello, user {user_id}!"}
+
+
+async def get_current_customer_id(
+    # Эта зависимость сама зависит от двух других:
+    telegram_data: Annotated[Dict, Depends(validate_telegram_data)],
+    wc_service: WooCommerceService = Depends(get_woocommerce_service)
+) -> int:
+    """
+    Универсальная зависимость для получения customer_id текущего пользователя.
+
+    1. Валидирует initData.
+    2. Вызывает сервис для поиска или создания пользователя в WooCommerce.
+    3. Возвращает customer_id.
+    4. Если ID не найден/не создан, вызывает HTTP исключение.
+
+    Используется во всех эндпоинтах, требующих аутентификации пользователя Mini App.
+    """
+    user_info = telegram_data.get('user', {})
+    if not user_info:
+        # Этого не должно произойти, так как validate_telegram_data уже проверил
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Некорректные данные пользователя в initData."
+        )
+
+    # Используем нашу надежную функцию из сервиса
+    customer_id = await wc_service.find_or_create_customer_by_telegram_data(user_info)
+    
+    if not customer_id:
+        # Это критическая ошибка - означает, что наш бэкенд не может
+        # связаться с WooCommerce или произошла непредвиденная ошибка
+        logger.critical(f"CRITICAL: Could not resolve a customer_id for user {user_info.get('id')}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Сервис временно недоступен. Не удалось идентифицировать профиль пользователя."
+        )
+        
+    return customer_id

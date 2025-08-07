@@ -14,9 +14,9 @@ html_escape = html.escape
 async def set_bot_commands(bot: Bot):
     """Устанавливает список команд, видимых пользователям в меню."""
     commands = [
-        BotCommand(command="start", description="🚀 Перезапустить бота"),
+        BotCommand(command="start", description="🚀 Перезапустить / Начать"),
+        BotCommand(command="shop", description="🛍️ Открыть магазин"), # <<< НОВАЯ КОМАНДА
         BotCommand(command="myorders", description="📦 Мои заказы"),
-        
     ]
     try:
         await bot.set_my_commands(commands, scope=BotCommandScopeDefault())

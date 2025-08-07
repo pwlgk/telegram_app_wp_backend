@@ -23,15 +23,15 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
     """
     builder = InlineKeyboardBuilder()
 
-    if not settings.MINI_APP_URL:
+    if not settings.MINI_APP_URL_BOT:
         # Логируем предупреждение, если URL не задан
         import logging
-        logging.getLogger(__name__).warning("MINI_APP_URL is not set in settings. Cannot create WebApp button.")
+        logging.getLogger(__name__).warning("MINI_APP_URL_BOT is not set in settings. Cannot create WebApp button.")
         # Возвращаем кнопку-плейсхолдер
         builder.button(text="❌ Магазин временно недоступен", callback_data="shop_unavailable")
     else:
         # Создаем объект WebAppInfo с URL нашего фронтенда
-        web_app_info = WebAppInfo(url=settings.MINI_APP_URL)
+        web_app_info = WebAppInfo(url=settings.MINI_APP_URL_BOT)
 
         # Добавляем кнопку типа web_app
         builder.button(

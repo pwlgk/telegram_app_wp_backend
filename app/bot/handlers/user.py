@@ -16,20 +16,17 @@ from app.services.telegram import TelegramService
 from app.bot.keyboards.inline import get_main_menu_keyboard
 from aiogram.types import InputMediaPhoto # <<< Добавляем импорт
 from app.bot.utils import format_customer_info, format_customer_order_details 
+from aiogram.exceptions import TelegramBadRequest # <<< Добавляем импорт для обработки ошибок
+
 logger = logging.getLogger(__name__)
 user_router = Router(name="user_handlers")
 
-@user_router.message(CommandStart())
-async def handle_start(message: Message):
+async def send_welcome_message(message: Message):
     """
-    Обработчик команды /start.
-    Отправляет приветственное сообщение и кнопку для открытия Mini App.
+    Вспомогательная функция для отправки и закрепления приветственного сообщения.
     """
-    logger.info(f"Handler 'handle_start' triggered by user {message.from_user.id}")
-
     user_name = message.from_user.full_name
-    logger.info(f"User {message.from_user.id} ({user_name}) started the bot.")
-
+    
     welcome_text = (
         f"👋 Здравствуйте, {hbold(user_name)}!\n\n"
         f"Добро пожаловать в наш магазин. Чтобы посмотреть каталог "
@@ -37,8 +34,86 @@ async def handle_start(message: Message):
     )
     reply_markup = get_main_menu_keyboard()
 
-    await message.answer(text=welcome_text, reply_markup=reply_markup)
+    # Отправляем приветственное сообщение
+    sent_message = await message.answer(
+        text=welcome_text,
+        reply_markup=reply_markup
+    )
+    
+    # Пытаемся закрепить это сообщение
+    try:
+        # disable_notification=True - чтобы не присылать пользователю лишнее уведомление о закреплении
+        await sent_message.pin(disable_notification=True)
+        logger.info(f"Welcome message pinned for user {message.from_user.id}")
+    except TelegramBadRequest as e:
+        # Ловим ошибку, если у бота нет прав на закрепление сообщений
+        # (например, в группе, где он не администратор)
+        logger.warning(f"Failed to pin message for user {message.from_user.id}. Error: {e.message}")
+    except Exception as e:
+        # Ловим другие возможные ошибки
+        logger.error(f"An unexpected error occurred while pinning message: {e}", exc_info=True)
 
+
+
+@user_router.message(CommandStart())
+async def handle_start(message: Message, wc_service: WooCommerceService): # <<< Добавили wc_service
+    """
+    Обработчик команды /start.
+    Регистрирует пользователя в WooCommerce и отправляет приветствие.
+    """
+    user = message.from_user
+    logger.info(f"User {user.id} ({user.full_name}) started the bot. Registering...")
+
+    # Преобразуем объект User в словарь, который ожидает наш сервис
+    user_info = {
+        "id": user.id,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "username": user.username
+    }
+    
+    # Вызываем метод регистрации/поиска. Он тихо создаст пользователя, если его нет.
+    try:
+        customer_id = await wc_service.find_or_create_customer_by_telegram_data(user_info)
+        if customer_id:
+            logger.info(f"User {user.id} successfully registered/found with customer_id: {customer_id}")
+        else:
+            logger.error(f"Failed to register user {user.id} in WooCommerce.")
+            # Даже если регистрация не удалась, мы все равно должны ответить пользователю
+    except Exception as e:
+        logger.exception(f"An error occurred during user registration for user_id {user.id}: {e}")
+        # И в этом случае тоже отвечаем
+    
+    await send_welcome_message(message)
+
+@user_router.message(Command("shop"))
+async def handle_shop_command(message: Message):
+    """
+    Обработчик команды /shop.
+    Просто отправляет (и закрепляет) сообщение с кнопкой Mini App.
+    """
+    logger.info(f"User {message.from_user.id} used /shop command.")
+    user = message.from_user
+    logger.info(f"User {user.id} ({user.full_name}) started the bot. Registering...")
+
+    # Преобразуем объект User в словарь, который ожидает наш сервис
+    user_info = {
+        "id": user.id,
+        "first_name": user.first_name,
+        "last_name": user.last_name,
+        "username": user.username
+    }
+# Формируем приветственное сообщение
+    welcome_text = (
+        f"👋 С возвращением, {hbold(user.full_name)}!\n\n"
+        f"Вы можете просмотреть каталог и оформить заказ прямо здесь."
+    )
+    reply_markup = get_main_menu_keyboard()
+
+    await message.answer(
+        text=welcome_text,
+        reply_markup=reply_markup
+    )
 @user_router.message(Command("myorders"))
 async def handle_my_orders(message: Message, wc_service: WooCommerceService, tg_service: TelegramService):
     """Обрабатывает команду /myorders, отправляя пользователю список его заказов."""

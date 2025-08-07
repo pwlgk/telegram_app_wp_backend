@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str
     TELEGRAM_MANAGER_IDS_STR: str
     MINI_APP_URL: str
+    MINI_APP_URL_BOT: str
     API_BASE_URL: Optional[str] = None
     ADMIN_API_KEY: Optional[str] = None
     
