@@ -204,7 +204,7 @@ async def handle_send_message_to_customer(message: Message, state: FSMContext, b
 
     try:
         # Формируем префикс для сообщения клиенту
-        prefix = f"Сообщение от менеджера по заказу №{order_id}:\n\n"
+        prefix = f"Сообщение по заказу №{order_id}:\n\n"
         
         # message.copy_to() - самый простой способ переслать сообщение
         # со всем содержимым (фото, текст, стили).
