@@ -1,80 +1,74 @@
 # backend/app/bot/instance.py
+
 import logging
-from typing import Optional, Tuple
+from aiogram.fsm.storage.memory import MemoryStorage # Для состояний
+
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
-# >>>>> ИМПОРТИРУЕМ DefaultBotProperties <<<<<
 from aiogram.client.default import DefaultBotProperties
-# from aiogram.fsm.storage.memory import MemoryStorage # Если нужен FSM
+from app.bot.handlers.manager import manager_router # <<< Импортируем
 
 from app.core.config import settings
-from app.bot.handlers import register_handlers
+# Импорты роутеров
+from app.bot.handlers.user import user_router
+from app.bot.handlers.callbacks import callback_router
+# Импорт Middleware
+from app.bot.middleware import LoggingMiddleware
 
 logger = logging.getLogger(__name__)
 
-_bot_instance: Optional[Bot] = None
-_dispatcher_instance: Optional[Dispatcher] = None
-
-async def initialize_bot() -> Tuple[Bot, Dispatcher]:
-    """Инициализирует Bot, Dispatcher и регистрирует хендлеры."""
-    global _bot_instance, _dispatcher_instance
-
-    if _bot_instance and _dispatcher_instance:
-        logger.warning("Bot and Dispatcher already initialized.")
-        return _bot_instance, _dispatcher_instance
-
-    # >>>>> ИЗМЕНЯЕМ СПОСОБ ПЕРЕДАЧИ parse_mode <<<<<
-    # Создаем объект с настройками по умолчанию
+async def initialize_bot() -> tuple[Bot, Dispatcher]:
+    """
+    Инициализирует и настраивает бота и диспетчер, регистрирует роутеры.
+    """
     default_properties = DefaultBotProperties(
         parse_mode=ParseMode.HTML
-        # Здесь можно добавить другие дефолтные настройки, если нужно:
-        # disable_web_page_preview=True,
-        # protect_content=False
     )
-    # Передаем настройки через параметр default
+    storage = MemoryStorage() # Используем хранилище в памяти
+
     bot = Bot(token=settings.TELEGRAM_BOT_TOKEN, default=default_properties)
-    # >>>>> КОНЕЦ ИЗМЕНЕНИЙ <<<<<
+    dp = Dispatcher(storage=storage) # <<< Передаем storage
 
-    # storage = MemoryStorage() # Пример
-    # dp = Dispatcher(storage=storage)
-    dp = Dispatcher()
+    # Регистрация Middleware
+    dp.update.outer_middleware(LoggingMiddleware())
+    logger.info("LoggingMiddleware registered.")
 
-    register_handlers(dp)
+    # Регистрация роутеров
+    dp.include_router(user_router)
+    dp.include_router(manager_router) # <<< Регистрируем
 
-    _bot_instance = bot
-    _dispatcher_instance = dp
+    dp.include_router(callback_router)
+
+    
+    logger.info("Bot handlers registered: user_router, callback_router.")
 
     try:
+        # Проверяем соединение с Telegram API и получаем информацию о боте
         bot_info = await bot.get_me()
-        logger.info(f"Bot initialized: ID={bot_info.id}, Username={bot_info.username}")
+        
+        # =======================================================================
+        # <<< ВОТ ЭТОТ ЛОГ ВЫВЕДЕТ ИМЯ БОТА ПРИ ЗАПУСКЕ >>>
+        logger.info(f"Bot initialized: ID={bot_info.id}, Username='{bot_info.username}'")
+        # =======================================================================
+
     except Exception as e:
         logger.exception(f"Failed to connect to Telegram API: {e}")
+        # Если бот не может подключиться, нет смысла запускать приложение
         raise RuntimeError("Could not initialize Telegram Bot connection") from e
 
     logger.info("Aiogram Bot and Dispatcher initialized successfully.")
     return bot, dp
 
-async def shutdown_bot(bot: Optional[Bot] = None, dp: Optional[Dispatcher] = None):
-    """Корректно останавливает сессию бота."""
-    global _bot_instance, _dispatcher_instance
-    bot_to_close = bot or _bot_instance
-
-    if bot_to_close:
+async def shutdown_bot(bot: Bot | None):
+    """
+    Корректно закрывает сессию бота.
+    """
+    if bot:
         logger.info("Shutting down bot session...")
         try:
-            await bot_to_close.session.close()
+            await bot.session.close()
             logger.info("Bot session closed.")
         except Exception as e:
-            logger.error(f"Error closing bot session: {e}")
+            logger.error(f"Error closing bot session: {e}", exc_info=True)
     else:
-         logger.warning("Bot instance not found for shutdown.")
-
-    _bot_instance = None
-    _dispatcher_instance = None
-
-
-def get_bot_instance() -> Optional[Bot]:
-    return _bot_instance
-
-def get_dispatcher_instance() -> Optional[Dispatcher]:
-    return _dispatcher_instance
+         logger.warning("Bot instance not found, skipping shutdown.")

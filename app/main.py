@@ -15,6 +15,7 @@ from app.services.woocommerce import WooCommerceService # Импорт серв�
 from app.services.telegram import TelegramService     # Импорт сервиса
 from app.bot.instance import initialize_bot, shutdown_bot # Функции управления ботом
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter # Импорты исключений
+from app.bot.utils import set_bot_commands # <<< ИМПОРТИРУЕМ ФУНКЦИЮ
 
 # --- Настройка логирования ---
 log_level = settings.LOGGING_LEVEL.upper()
@@ -40,6 +41,7 @@ async def lifespan(app: FastAPI):
     # Инициализация сервисов приложения
     woo_service = WooCommerceService()
     telegram_service = TelegramService(bot=bot)
+    await set_bot_commands(bot)
 
     # Сохранение экземпляров в состоянии приложения для доступа через зависимости
     app.state.woocommerce_service = woo_service

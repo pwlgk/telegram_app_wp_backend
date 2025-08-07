@@ -2,18 +2,8 @@
 from pydantic import BaseModel, Field, EmailStr, model_serializer
 # EmailStr можно убрать, если email: Optional[str]
 from typing import List, Optional, Dict, Any
-from app.models.common import MetaData # Импортируем общую модель MetaData
+from app.models.common import MetaData, BillingInfo # <<< ИМПОРТИРУЕМ BillingInfo
 
-
-# Модели для СОЗДАНИЯ заказа
-class BillingAddress(BaseModel):
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    email: Optional[str] = "" # OK: Разрешаем пустую строку или None
-    phone: Optional[str] = None
-
-class ShippingAddress(BillingAddress):
-    pass
 
 class CouponLine(BaseModel): # OK: Модель для строки купона
     code: str
@@ -37,8 +27,8 @@ class OrderCreateWooCommerce(BaseModel): # OK: Основная модель д�
     payment_method_title: str = "Согласование с менеджером (Telegram)"
     set_paid: bool = False
     status: str = "on-hold"
-    billing: Optional[BillingAddress] = None
-    shipping: Optional[ShippingAddress] = None
+    billing: Optional[BillingInfo] = None
+    shipping: Optional[BillingInfo] = None
     line_items: List[LineItemCreate]
     customer_note: Optional[str] = None
     customer_id: int = 0
@@ -62,8 +52,8 @@ class OrderWooCommerce(BaseModel): # OK: Модель для ответа
     total_tax: str = "0.00" # Общий налог
     customer_id: int
     order_key: str
-    billing: Optional[BillingAddress] = None # OK: Использует обновленную модель
-    shipping: Optional[ShippingAddress] = None
+    billing: Optional[BillingInfo] = None # OK: Использует обновленную модель
+    shipping: Optional[BillingInfo] = None
     payment_method: str
     payment_method_title: str
     transaction_id: Optional[str] = None

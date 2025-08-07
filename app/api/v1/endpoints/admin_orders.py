@@ -1,37 +1,38 @@
 # backend/app/api/v1/endpoints/admin_orders.py
 import logging
-from fastapi import APIRouter, Depends, Query, HTTPException, status, Response, Body, BackgroundTasks
+from fastapi import APIRouter, Depends, Query, HTTPException, status, Body, BackgroundTasks, Request # Добавили Request
 from typing import List, Optional, Dict
 
 from app.services.woocommerce import WooCommerceService, WooCommerceServiceError
-from app.services.telegram import TelegramService # Для уведомлений клиенту
-from app.dependencies import get_woocommerce_service, get_telegram_service, verify_admin_api_key # Добавили verify_admin_api_key
-from app.models.order import OrderWooCommerce # Модель для ответа
+from app.services.telegram import TelegramService
+from app.dependencies import get_woocommerce_service, get_telegram_service, verify_admin_api_key
+from app.models.order import OrderWooCommerce
+from app.models.pagination import PaginatedResponse # <<< Импортируем нашу модель
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 router = APIRouter(
-    prefix="/admin/orders", # Префикс для всех ручек в этом роутере
+    prefix="/admin/orders",
     tags=["Admin Orders"],
-    dependencies=[Depends(verify_admin_api_key)] # <<< ЗАЩИЩАЕМ ВСЕ РУЧКИ В РОУТЕРЕ
+    dependencies=[Depends(verify_admin_api_key)]
 )
 
 # --- Эндпоинт для получения списка заказов ---
 @router.get(
     "/",
     summary="Получить список заказов (для менеджера)",
-    # response_model=List[OrderWooCommerce] # Может быть слишком много данных для списка
+    response_model=PaginatedResponse[OrderWooCommerce] # <<< Указываем новую модель ответа
 )
 async def get_admin_orders_list(
-    response: Response,
+    request: Request, # <<< Добавляем зависимость Request
     page: int = Query(1, ge=1),
     per_page: int = Query(10, ge=1, le=50),
     status: Optional[str] = Query(None, description="Фильтр по статусу (или список через запятую: on-hold,processing)"),
     search: Optional[str] = Query(None, description="Поиск по номеру, email..."),
     wc_service: WooCommerceService = Depends(get_woocommerce_service),
 ):
-    """Возвращает список заказов с пагинацией для менеджера."""
-    status_list = status.split(',') if status else ['on-hold', 'processing'] # По умолчанию ищем новые и в обработке
+    """Возвращает пагинированный список заказов для менеджера."""
+    status_list = status.split(',') if status else ['on-hold', 'processing']
     try:
         orders_data, headers = await wc_service.get_orders(
             page=page,
@@ -44,16 +45,32 @@ async def get_admin_orders_list(
         if orders_data is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Заказы не найдены.")
 
-        # Установка заголовков пагинации
+        # --- Логика формирования пагинированного ответа ---
+        total_count = 0
+        total_pages = 0
         if headers:
-            total_pages = headers.get('x-wp-totalpages')
-            total_count = headers.get('x-wp-total')
-            if total_pages: response.headers['X-WP-TotalPages'] = total_pages
-            if total_count: response.headers['X-WP-Total'] = total_count
+            try:
+                total_count = int(headers.get('x-wp-total', 0))
+                total_pages = int(headers.get('x-wp-totalpages', 0))
+            except (ValueError, TypeError):
+                logger.warning("Could not parse pagination headers from WooCommerce for admin orders.")
+                total_count = len(orders_data)
+                total_pages = page
 
-        # Можно вернуть упрощенный список для бота
-        # simplified_orders = [...]
-        return orders_data # Пока возвращаем полные данные
+        next_url = None
+        if page < total_pages:
+            next_url = str(request.url.replace_query_params(page=page + 1))
+
+        previous_url = None
+        if page > 1:
+            previous_url = str(request.url.replace_query_params(page=page - 1))
+
+        return PaginatedResponse(
+            count=total_count,
+            next=next_url,
+            previous=previous_url,
+            results=orders_data
+        )
 
     except WooCommerceServiceError as e:
         raise HTTPException(status_code=e.status_code or 503, detail=e.message)
@@ -66,7 +83,7 @@ async def get_admin_orders_list(
 @router.get(
     "/{order_id}",
     summary="Получить детали заказа (для менеджера)",
-    response_model=OrderWooCommerce # Используем полную модель
+    response_model=OrderWooCommerce
 )
 async def get_admin_order_details(
     order_id: int,
@@ -87,34 +104,29 @@ async def get_admin_order_details(
 
 # --- Эндпоинт для обновления статуса заказа ---
 class StatusUpdatePayload(BaseModel):
-    status: str # Новый статус ('processing', 'completed', 'cancelled', etc.)
+    status: str
 
 @router.put(
     "/{order_id}/status",
     summary="Обновить статус заказа (для менеджера)",
-    response_model=OrderWooCommerce # Возвращаем обновленный заказ
+    response_model=OrderWooCommerce
 )
 async def update_admin_order_status(
     order_id: int,
     payload: StatusUpdatePayload,
-    background_tasks: BackgroundTasks, # Для фонового уведомления клиенту
+    background_tasks: BackgroundTasks,
     wc_service: WooCommerceService = Depends(get_woocommerce_service),
     tg_service: TelegramService = Depends(get_telegram_service),
 ):
     """Обновляет статус заказа и уведомляет клиента."""
     new_status = payload.status
-    # TODO: Добавить валидацию возможных статусов?
     logger.info(f"Attempting admin update for order {order_id} to status '{new_status}'")
     try:
-        # Шаг 1: Обновить статус в WooCommerce
         updated_order = await wc_service.update_order_status(order_id, new_status)
         if updated_order is None:
-             # Ошибка уже залогирована в сервисе
              raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Не удалось обновить статус заказа в WooCommerce.")
 
-        # Шаг 2: Поставить задачу уведомления клиента в фон
         customer_tg_id = None
-        # Ищем ID клиента в метаданных обновленного заказа
         for meta in updated_order.get('meta_data', []):
             if meta.get('key') == '_telegram_user_id':
                 try:
@@ -135,7 +147,6 @@ async def update_admin_order_status(
         else:
             logger.warning(f"Could not find customer Telegram ID for order {order_id}. Notification skipped.")
 
-        # Возвращаем обновленный заказ
         return updated_order
 
     except WooCommerceServiceError as e:

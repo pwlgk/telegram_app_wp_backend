@@ -1,0 +1,52 @@
+.
+├── app
+│   ├── api
+│   │   └── v1
+│   │       ├── endpoints
+│   │       │   ├── admin_analytics.py
+│   │       │   ├── admin_orders.py
+│   │       │   ├── analytics.py
+│   │       │   ├── cart.py
+│   │       │   ├── categories.py
+│   │       │   ├── coupons.py
+│   │       │   ├── customers.py
+│   │       │   ├── orders.py
+│   │       │   ├── products.py
+│   │       │   ├── tags.py
+│   │       │   └── webhook.py
+│   │       └── router.py
+│   ├── bot
+│   │   ├── callback_data.py
+│   │   ├── handlers
+│   │   │   ├── callbacks.py
+│   │   │   ├── commands.py
+│   │   │   ├── __init__.py
+│   │   │   ├── manager.py
+│   │   │   └── user.py
+│   │   ├── instance.py
+│   │   ├── keyboards
+│   │   │   ├── __init__.py
+│   │   │   └── inline.py
+│   │   └── utils.py
+│   ├── core
+│   │   ├── config.py
+│   │   └── db.py
+│   ├── dependencies.py
+│   ├── main.py
+│   ├── models
+│   │   ├── analytics.py
+│   │   ├── common.py
+│   │   ├── order.py
+│   │   ├── pagination.py
+│   │   └── product.py
+│   ├── services
+│   │   ├── telegram.py
+│   │   ├── woocommerce.py
+│   │   └── woocommerce_s.py
+│   └── utils
+│       └── telegram_auth.py
+├── .env
+├── .env.development
+├── .gitignore
+├── requirements_prod.txt
+├── requirements.txt

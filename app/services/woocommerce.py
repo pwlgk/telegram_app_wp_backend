@@ -1,4 +1,5 @@
 # backend/app/services/woocommerce.py
+from datetime import date
 import httpx
 import json
 import logging
@@ -140,7 +141,8 @@ class WooCommerceService:
         on_sale: Optional[bool] = None,
         orderby: str = 'popularity',
         order: str = 'desc',
-        # Убрали filter_stock как параметр метода
+        include: Optional[List[int]] = None, # <<< ДОБАВЛЯЕМ ЯВНЫЙ ПАРАМЕТР
+
         **kwargs
     # Возвращаем кортеж (данные, заголовки)
     ) -> Tuple[Optional[List[Dict]], Optional[Headers]]:
@@ -152,6 +154,7 @@ class WooCommerceService:
             'page': page, 'per_page': per_page, 'status': status,
             'orderby': orderby, 'order': order, 'category': category,
             'search': search, 'featured': featured, 'on_sale': on_sale,
+            'include': ','.join(map(str, include)) if include else None, # <<< ОБРАБАТЫВАЕМ ЕГО
             **kwargs
         }
         params = {k: v for k, v in params.items() if v is not None}
@@ -189,7 +192,39 @@ class WooCommerceService:
              logger.exception(f"Unexpected error in get_products: {e}")
              raise WooCommerceServiceError("Непредвиденная ошибка при получении товаров") from e
 
-
+    async def get_product_tags(
+        self,
+        per_page: int = 100,
+        orderby: str = 'count', # Сортируем по популярности (количеству товаров)
+        order: str = 'desc',
+        hide_empty: bool = True,
+        **kwargs
+    ) -> Optional[List[Dict]]:
+        """Получает список меток (тегов) товаров."""
+        params = {
+            'per_page': per_page,
+            'orderby': orderby,
+            'order': order,
+            'hide_empty': hide_empty,
+            **kwargs
+        }
+        params = {k: v for k, v in params.items() if v is not None}
+        logger.info(f"Fetching product tags with params: {params}")
+        try:
+            # Получаем только данные
+            response_data, _ = await self._request("GET", "products/tags", params=params)
+            if isinstance(response_data, list):
+                return response_data
+            else:
+                 logger.error(f"Unexpected data type received for product tags: {type(response_data)}")
+                 return []
+        except WooCommerceServiceError as e:
+             logger.error(f"WooCommerceServiceError in get_product_tags: {e}", exc_info=True)
+             raise e
+        except Exception as e:
+             logger.exception(f"Unexpected error in get_product_tags: {e}")
+             raise WooCommerceServiceError("Непредвиденная ошибка при получении меток товаров") from e
+        
     async def get_product(self, product_id: int) -> Optional[Dict]:
         logger.info(f"Fetching product with ID: {product_id}")
         try:
@@ -377,3 +412,183 @@ class WooCommerceService:
         except Exception as e:
             logger.exception(f"Unexpected error in update_order_status for ID {order_id}: {e}")
             raise WooCommerceServiceError(f"Непредвиденная ошибка при обновлении статуса заказа {order_id}") from e
+        
+    async def get_customer_by_email(self, email: str) -> Optional[Dict]:
+        """Ищет пользователя по email."""
+        if not email:
+            return None
+        logger.info(f"Searching for customer with email: {email}")
+        try:
+            # Ищем по всем ролям для надежности
+            params = {'email': email, 'role': 'all'}
+            response_data, _ = await self._request("GET", "customers", params=params)
+            
+            logger.debug(f"RAW response from GET /customers for email '{email}': {response_data}")
+            
+            if isinstance(response_data, list) and len(response_data) > 0:
+                customer = response_data[0]
+                logger.info(f"Customer found with ID: {customer.get('id')} for email: {email}")
+                return customer
+            else:
+                logger.info(f"No customer found for email: {email}")
+                return None
+        except WooCommerceServiceError as e:
+            logger.error(f"Error searching for customer by email {email}: {e}")
+            return None
+
+    async def create_customer(self, customer_data: Dict) -> Optional[Dict]:
+        """
+        Создает нового пользователя.
+        В случае УСПЕХА возвращает словарь с данными пользователя.
+        В случае ОШИБКИ пробрасывает исключение WooCommerceServiceError.
+        """
+        logger.info(f"Attempting to create a new customer with email: {customer_data.get('email')}")
+        try:
+            created_customer_data, _ = await self._request("POST", "customers", json_data=customer_data)
+            
+            if created_customer_data and isinstance(created_customer_data, dict):
+                logger.info(f"Customer created successfully with ID: {created_customer_data.get('id')}")
+                return created_customer_data
+            
+            raise WooCommerceServiceError("Не удалось создать пользователя или получен некорректный ответ")
+        except WooCommerceServiceError as e:
+            logger.warning(f"WooCommerce service error during customer creation, re-raising: {e.message}")
+            raise e
+
+    async def find_or_create_customer_by_telegram_data(self, user_info: Dict) -> Optional[int]:
+        """
+        Находит или создает пользователя.
+        Также проверяет наличие мета-поля _telegram_user_id и добавляет его при необходимости.
+        """
+        tg_user_id = user_info.get('id')
+        if not tg_user_id:
+            logger.error("Cannot find or create customer: Telegram user ID is missing.")
+            return None
+
+        logger.info(f"--- Resolving customer for Telegram User ID: {tg_user_id} ---")
+        customer_email = f"tg_{tg_user_id}@telegram.user"
+
+        # 1. Сначала ищем пользователя по email
+        logger.info(f"Step 1: Trying to find existing customer by email '{customer_email}'")
+        existing_customer = await self.get_customer_by_email(customer_email)
+        
+        if existing_customer and existing_customer.get('id'):
+            customer_id = existing_customer['id']
+            logger.info(f"SUCCESS: Found existing customer with ID: {customer_id}")
+
+            # <<< НАЧАЛО ИЗМЕНЕНИЯ: ПРОВЕРКА И ОБНОВЛЕНИЕ МЕТА-ДАННЫХ
+            has_tg_id_meta = any(
+                meta.get('key') == '_telegram_user_id'
+                for meta in existing_customer.get('meta_data', [])
+            )
+            
+            if not has_tg_id_meta:
+                logger.warning(f"Customer {customer_id} is missing '_telegram_user_id' meta field. Updating now.")
+                await self.update_customer(
+                    customer_id,
+                    {"meta_data": [{"key": "_telegram_user_id", "value": str(tg_user_id)}]}
+                )
+            # КОНЕЦ ИЗМЕНЕНИЯ >>>
+                
+            return customer_id
+
+        # 2. Если не нашли - создаем нового
+        logger.info(f"Step 2: Customer not found. Attempting to CREATE a new one.")
+        
+        customer_username = f"tg_user_{tg_user_id}"
+        tg_first_name = user_info.get('first_name', 'Telegram User')
+        tg_last_name = user_info.get('last_name', f'#{tg_user_id}')
+        
+        new_customer_data = {
+            "email": customer_email, "first_name": tg_first_name, "last_name": tg_last_name,
+            "username": customer_username,
+            "billing": {"first_name": tg_first_name, "last_name": tg_last_name, "email": customer_email},
+            "shipping": {"first_name": tg_first_name, "last_name": tg_last_name},
+            "meta_data": [
+                {"key": "_telegram_user_id", "value": str(tg_user_id)},
+                # Сразу добавляем и username для надежности
+                {"key": "_telegram_username", "value": user_info.get('username', '')}
+            ]
+        }
+        
+        try:
+            created_customer = await self.create_customer(new_customer_data)
+            if created_customer and created_customer.get('id'):
+                logger.info(f"SUCCESS: New customer was created with ID: {created_customer.get('id')}")
+                return created_customer['id']
+        except WooCommerceServiceError as e:
+            if e.details and e.details.get('code') in ('registration-error-email-exists', 'registration-error-username-exists'):
+                logger.warning("Race condition detected. Retrying to find by email.")
+                final_attempt_customer = await self.get_customer_by_email(customer_email)
+                if final_attempt_customer and final_attempt_customer.get('id'):
+                    logger.info(f"SUCCESS on retry: Found existing customer with ID: {final_attempt_customer.get('id')}")
+                    return final_attempt_customer['id']
+            else:
+                logger.error(f"An unexpected WooCommerce error occurred: {e.message}")
+        
+        logger.error(f"--- FAILED to resolve customer for Telegram User ID: {tg_user_id}. ---")
+        return None
+    async def update_customer(self, customer_id: int, data_to_update: Dict) -> Optional[Dict]:
+        """Обновляет данные существующего пользователя (customer)."""
+        if not data_to_update:
+            logger.warning(f"No data provided to update customer {customer_id}")
+            return None
+            
+        logger.info(f"Attempting to update customer {customer_id}")
+        try:
+            updated_customer_data, _ = await self._request("PUT", f"customers/{customer_id}", json_data=data_to_update)
+            if updated_customer_data and isinstance(updated_customer_data, dict):
+                logger.info(f"Customer {customer_id} updated successfully.")
+                return updated_customer_data
+            else:
+                logger.error(f"Failed to update customer {customer_id}. Received unexpected response.")
+                return None
+        except WooCommerceServiceError as e:
+            logger.error(f"WooCommerce service error during customer {customer_id} update: {e}", exc_info=True)
+            return None
+        
+
+    async def get_customer_by_id(self, customer_id: int) -> Optional[Dict]:
+        """Получает данные пользователя по его ID."""
+        logger.info(f"Fetching customer with ID: {customer_id}")
+        try:
+            response_data, _ = await self._request("GET", f"customers/{customer_id}")
+            if isinstance(response_data, dict):
+                return response_data
+            return None
+        except WooCommerceServiceError as e:
+            if e.status_code == 404:
+                return None
+            logger.error(f"Error fetching customer by ID {customer_id}: {e}")
+            return None
+
+    async def get_customers(self, per_page=10, page=1, search=None):
+        params = {'per_page': per_page, 'page': page, 'role': 'customer'}
+        if search:
+            params['search'] = search
+        return await self._request("GET", "customers", params=params)
+    
+    async def get_sales_report(self, period: str = None, date_min: date = None, date_max: date = None) -> Optional[List[Dict]]:
+        """
+        Получает отчет о продажах из WooCommerce.
+        Поддерживает либо `period`, либо диапазон дат.
+        """
+        params = {}
+        if period:
+            params['period'] = period
+        elif date_min and date_max:
+            params['date_min'] = date_min.isoformat()
+            params['date_max'] = date_max.isoformat()
+        
+        logger.info(f"Fetching sales report with params: {params}")
+        try:
+            # Отчеты - это список, даже если один
+            response_data, _ = await self._request("GET", "reports/sales", params=params)
+            if isinstance(response_data, list):
+                return response_data
+            else:
+                logger.error(f"Unexpected data type received for sales report: {type(response_data)}")
+                return None
+        except WooCommerceServiceError as e:
+            logger.error(f"WooCommerceServiceError in get_sales_report: {e}", exc_info=True)
+            return None # Возвращаем None при ошибке

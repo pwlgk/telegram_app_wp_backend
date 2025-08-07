@@ -1,7 +1,8 @@
 # backend/app/dependencies.py
+import logging
 from datetime import datetime, timezone
 import hmac
-from fastapi import Request, HTTPException, logger, status, Depends, Header, Security
+from fastapi import Request, HTTPException, status, Depends, Header, Security
 from fastapi.security import APIKeyHeader
 from typing import Annotated, Dict, Optional
 from aiogram import Bot, Dispatcher
@@ -9,6 +10,9 @@ from app.services.woocommerce import WooCommerceService, WooCommerceServiceError
 from app.services.telegram import TelegramService, TelegramNotificationError
 from app.utils.telegram_auth import validate_init_data, TelegramAuthError # Импортируем
 from app.core.config import settings
+
+# Инициализируем логгер
+logger = logging.getLogger(__name__)
 
 # Определяем схему для заголовка X-Admin-API-Key
 api_key_header_admin = APIKeyHeader(name="X-Admin-API-Key", auto_error=False)
