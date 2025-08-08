@@ -16,6 +16,7 @@ from app.services.telegram import TelegramService     # Импорт серви�
 from app.bot.instance import initialize_bot, shutdown_bot # Функции управления ботом
 from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter # Импорты исключений
 from app.bot.utils import set_bot_commands # <<< ИМПОРТИРУЕМ ФУНКЦИЮ
+from filelock import FileLock, Timeout # <<< Добавляем импорт
 
 # --- Настройка логирования ---
 log_level = settings.LOGGING_LEVEL.upper()
@@ -36,98 +37,88 @@ logger.info(f"Starting application with log level: {log_level}")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Application startup: Initializing resources...")
-    # Инициализация Aiogram Bot и Dispatcher
+    # Эти операции безопасны для запуска в нескольких процессах
     bot, dp = await initialize_bot()
-    # Инициализация сервисов приложения
     woo_service = WooCommerceService()
     telegram_service = TelegramService(bot=bot)
-    await set_bot_commands(bot)
 
-    # Сохранение экземпляров в состоянии приложения для доступа через зависимости
+    # Сохраняем экземпляры в состоянии приложения
     app.state.woocommerce_service = woo_service
     app.state.telegram_service = telegram_service
     app.state.bot_instance = bot
     app.state.dispatcher_instance = dp
-    logger.info("Services, Bot, and Dispatcher initialized.")
+    logger.info("Services, Bot, and Dispatcher initialized in current worker.")
 
-    # --- Установка вебхука при старте ---
-    webhook_url = settings.WEBHOOK_URL
-    webhook_secret = settings.WEBHOOK_SECRET
-    if webhook_url:
-        try:
-            current_webhook_info = await bot.get_webhook_info()
-            # Проверяем, нужно ли обновлять вебхук
-            if current_webhook_info.url != webhook_url or \
-               getattr(current_webhook_info, 'allowed_updates', None) != dp.resolve_used_update_types():
-                 logger.info(f"Current webhook URL '{current_webhook_info.url}' differs or allowed_updates mismatch. Setting new webhook to: {webhook_url}")
-                 await bot.set_webhook(
-                     url=webhook_url,
-                     secret_token=webhook_secret,
-                     allowed_updates=dp.resolve_used_update_types(),
-                     drop_pending_updates=True # Удаляем старые обновления при смене URL
-                 )
-                 # Повторная проверка после установки
-                 webhook_info = await bot.get_webhook_info()
-                 if webhook_info.url == webhook_url:
-                     logger.info(f"Telegram webhook successfully set to: {webhook_url}")
-                 else:
-                     logger.error(f"Failed to set webhook even after attempt. Current info: {webhook_info}")
-            else:
-                 logger.info(f"Telegram webhook is already correctly set to: {webhook_url}. Skipping setup.")
-        except TelegramAPIError as e: # Обработка ошибок API Telegram (включая Flood Control)
-             logger.exception(f"Error managing Telegram webhook: {e}")
-        except Exception as e: # Обработка других неожиданных ошибок
-             logger.exception(f"Unexpected error during webhook setup: {e}")
-    else:
-        # Логика удаления вебхука, если URL не задан в конфигурации
-        logger.warning("Webhook URL not configured. Deleting any existing webhook...")
-        try:
-            await bot.delete_webhook(drop_pending_updates=True)
-            logger.info("Deleted any existing Telegram webhook.")
-        except Exception as e:
-            logger.error(f"Error deleting existing webhook: {e}")
+    # --- БЛОК ОДНОРАЗОВОЙ ИНИЦИАЛИЗАЦИИ ---
+    # Создаем lock-файл во временной директории
+    lock = FileLock("app_startup.lock", timeout=10) # Таймаут 10 секунд на захват
 
-    # --- Приложение готово к работе ---
     try:
-        yield # FastAPI приложение обрабатывает запросы здесь
-    finally:
-        # --- Код очистки при остановке приложения ---
-        logger.info("Application shutdown: Cleaning up resources...")
+        # Пытаемся захватить блокировку. Только один воркер сможет это сделать.
+        with lock:
+            logger.info("Lock acquired by this worker. Performing one-time setup...")
+            
+            # 1. Устанавливаем команды бота
+            await set_bot_commands(bot)
 
-        # Удаление вебхука
-        logger.info("Deleting Telegram webhook...")
-        try:
-            current_bot = getattr(app.state, 'bot_instance', None)
-            if current_bot:
-                webhook_info = await current_bot.get_webhook_info()
-                if webhook_info.url: # Удаляем только если он был установлен
-                     await current_bot.delete_webhook(drop_pending_updates=False) # Не удаляем обновления при штатной остановке
-                     logger.info("Telegram webhook deleted.")
-                else:
-                     logger.info("No active webhook found to delete.")
+            # 2. Устанавливаем вебхук
+            webhook_url = settings.WEBHOOK_URL
+            webhook_secret = settings.WEBHOOK_SECRET
+            if webhook_url:
+                try:
+                    current_webhook_info = await bot.get_webhook_info()
+                    if current_webhook_info.url != webhook_url:
+                        logger.info(f"Setting new webhook to: {webhook_url}")
+                        await bot.set_webhook(
+                            url=webhook_url,
+                            secret_token=webhook_secret,
+                            allowed_updates=dp.resolve_used_update_types(),
+                            drop_pending_updates=True
+                        )
+                        logger.info(f"Telegram webhook successfully set.")
+                    else:
+                        logger.info(f"Telegram webhook is already set correctly. Skipping.")
+                except TelegramAPIError as e:
+                    logger.exception(f"Error managing Telegram webhook: {e}")
+                except Exception as e:
+                    logger.exception(f"Unexpected error during webhook setup: {e}")
             else:
-                logger.warning("Bot instance not found in app state during shutdown, skipping webhook deletion.")
+                logger.warning("Webhook URL not configured. Deleting any existing webhook...")
+                await bot.delete_webhook(drop_pending_updates=True)
+            
+            logger.info("One-time setup complete. Releasing lock.")
+
+    except Timeout:
+        # Этот блок выполнится для всех остальных воркеров, которые не смогли захватить лок
+        logger.info("Could not acquire lock, another worker is performing setup. Skipping.")
+
+    # --- КОНЕЦ БЛОКА ОДНОРАЗОВОЙ ИНИЦИАЛИЗАЦИИ ---
+
+    try:
+        yield
+    finally:
+        logger.info("Application shutdown in this worker: Cleaning up resources...")
+        
+        # Очистка ресурсов при остановке каждого воркера
+        await woo_service.close_client()
+        await shutdown_bot(bot=app.state.bot_instance)
+
+        # Удаление вебхука при остановке также должно быть защищено
+        try:
+            with lock:
+                logger.info("Lock acquired for shutdown. Deleting webhook...")
+                current_bot = getattr(app.state, 'bot_instance', None)
+                if current_bot:
+                    await current_bot.delete_webhook(drop_pending_updates=False)
+                    logger.info("Telegram webhook deleted by this worker.")
+        except Timeout:
+            logger.info("Could not acquire lock for shutdown, another worker will handle it. Skipping.")
         except Exception as e:
             logger.error(f"Error deleting webhook during shutdown: {e}")
 
-        # Закрытие HTTP клиента WooCommerce
-        logger.info("Closing WooCommerce HTTP client...")
-        woo_service_instance = getattr(app.state, 'woocommerce_service', None) # Безопасный доступ
-        if woo_service_instance:
-             try:
-                 await woo_service_instance.close_client()
-                 logger.info("WooCommerce HTTP client closed.")
-             except Exception as e:
-                 logger.error(f"Error closing WooCommerce client: {e}")
-        else:
-             logger.warning("WooCommerce service not found in app state during shutdown.")
+        logger.info("Resources cleaned up successfully in this worker.")
 
-        # Остановка сессии бота
-        await shutdown_bot(bot=getattr(app.state, 'bot_instance', None)) # Безопасный доступ
-
-        logger.info("Resources cleaned up successfully.")
-
-
+        
 # --- Создание экземпляра FastAPI ---
 app = FastAPI(
     title=settings.PROJECT_NAME,
