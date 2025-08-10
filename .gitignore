@@ -1,6 +1,6 @@
-.env
+.env*
 .venv
 venv
-
+app_startup*
 __pycache__
 __pycache__/

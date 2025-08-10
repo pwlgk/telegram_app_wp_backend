@@ -145,3 +145,5 @@ async def get_current_customer_id(
         )
         
     return customer_id
+
+
